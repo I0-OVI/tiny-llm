@@ -6,10 +6,10 @@
 
 namespace tiny_llm_ext {
 
-void load_library(mx::Device d, const char *path) {
+void load_library(const char *path) {
 #ifdef _METAL_
-    auto &md = mx::metal::device(d);
-    md.register_library("tiny_llm_ext", path);
+    auto &md = mx::metal::device(mx::Device(mx::Device::gpu));
+    md.get_library("tiny_llm_ext", path);
 #endif
 }
 

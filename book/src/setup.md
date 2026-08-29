@@ -1,10 +1,10 @@
 # Setting Up the Environment
 
-To follow along this course, you will need a Macintosh device with Apple Silicon. We manage the codebase with pdm.
+To follow this course, you need a Mac with Apple silicon. The project uses PDM for dependency and environment management.
 
-## Install pdm
+## Install PDM
 
-Please follow the [offcial guide](https://pdm-project.org/en/latest/) to install pdm.
+Follow the [official installation guide](https://pdm-project.org/en/latest/) to install PDM.
 
 ## Clone the Repository
 
@@ -15,27 +15,28 @@ git clone https://github.com/skyzh/tiny-llm
 The repository is organized as follows:
 
 ```
-src/tiny_llm -- your implementation
-src/tiny_llm_week1_ref -- reference implementation of week 1
+src/tiny_llm/ -- your implementation
+src/tiny_llm_ref/ -- the reference implementation
 tests/ -- unit tests for your implementation
-tests_ref_impl_week1/ -- unit tests for the reference implementation of week 1
-book/ -- the book
+tests_refsol/ -- unit tests for the reference implementation
+book/ -- the book source
 ```
 
-We provide all reference implementations and you can refer to them if you get stuck in the course.
+Reference implementations are available if you get stuck during the course.
 
 ## Install Dependencies
 
 ```bash
 cd tiny-llm
-pdm install -v # this will automatically create a virtual environment and install all dependencies
+# This creates a virtual environment and installs all dependencies.
+pdm install -v
 ```
 
 ## Check the Installation
 
 ```bash
-pdm run python check.py
-# The reference solution should pass all the *week 1* tests
+pdm run check-installation
+# The reference solution should pass all Week 1 tests.
 pdm run test-refsol -- -- -k week_1
 ```
 
@@ -49,18 +50,20 @@ pdm run test
 
 ## Download the Model Parameters
 
-We will use the Qwen2-7B-Instruct model for this course. It takes ~20GB of memory in week 1 to load the model parameters.
-If you do not have enough memory, you can consider using the smaller 0.5B model.
+We use the official 4-bit Qwen3 MLX model files. The default model is `Qwen/Qwen3-0.6B-MLX-4bit`, which is small enough
+for the dequantized Python implementation in Week 1. If your device has more memory, you can also try larger Qwen3 models.
 
-Follow the guide of [this page](https://huggingface.co/docs/huggingface_hub/main/en/guides/cli) to install the huggingface
-cli.
+Follow the [Hugging Face CLI guide](https://huggingface.co/docs/huggingface_hub/main/en/guides/cli) to install the `hf`
+command-line tool.
 
-The model parameters are hosted on Hugging Face. Once you authenticated your cli with the credentials, you can download
-them with:
+The model parameters are hosted on Hugging Face. After authenticating the CLI with your credentials, download them with:
 
 ```bash
-huggingface-cli login
-huggingface-cli download Qwen/Qwen2-7B-Instruct-MLX
+hf auth login
+hf download Qwen/Qwen3-0.6B-MLX-4bit
+# Optional larger models:
+hf download Qwen/Qwen3-1.7B-MLX-4bit
+hf download Qwen/Qwen3-4B-MLX-4bit
 ```
 
 Then, you can run:
@@ -69,8 +72,8 @@ Then, you can run:
 pdm run main --solution ref --loader week1
 ```
 
-It should load the model and print some text.
+The command should load the reference model and print generated text.
 
-In week 2, we will write some kernels in C++/Metal, and we will need to set up additional tools for that. We will cover it later.
+In Week 2, we will write C++ and Metal kernels. The required additional tools are covered at the end of Week 1.
 
 {{#include copyright.md}}

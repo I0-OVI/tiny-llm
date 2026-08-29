@@ -4,9 +4,11 @@ import mlx.core as mx
 import argparse
 
 import mlx_lm.sample_utils
+from model_names import shortcut_name_to_full_name
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--model", type=str, default="Qwen/Qwen2-7B-Instruct-MLX")
+parser.add_argument("--model", type=str, default="qwen3-0.6b")
+parser.add_argument("--draft-model", type=str, default=None)
 parser.add_argument(
     "--prompt",
     type=str,
@@ -18,26 +20,68 @@ parser.add_argument("--device", type=str, default="gpu")
 parser.add_argument("--sampler-temp", type=float, default=0)
 parser.add_argument("--sampler-top-p", type=float, default=None)
 parser.add_argument("--sampler-top-k", type=int, default=None)
+parser.add_argument("--enable-thinking", action="store_true")
+parser.add_argument(
+    "--disable-paged-attention",
+    action="store_true",
+    help="run the Week 3 Day 4 dense-gather compatibility checkpoint",
+)
+parser.add_argument(
+    "--week2-checkpoint",
+    choices=(
+        "kv-cache",
+        "quantized-matvec",
+        "decode-attention",
+        "rmsnorm",
+        "rope",
+        "swiglu",
+        "simd-matmul",
+        "split-k",
+    ),
+    help="run one cumulative Week 2 model checkpoint",
+)
+
 args = parser.parse_args()
+
+if args.week2_checkpoint is not None and args.loader != "week2":
+    parser.error("--week2-checkpoint requires --loader week2")
+if args.week2_checkpoint is not None and args.solution == "mlx":
+    parser.error("--week2-checkpoint is not supported with --solution mlx")
+if (
+    args.solution != "mlx"
+    and args.device != "gpu"
+    and (
+        args.loader == "week3"
+        or (args.loader == "week2" and args.week2_checkpoint != "kv-cache")
+    )
+):
+    parser.error(
+        "The completed Week 2 and Week 3 custom-kernel models are GPU-only; "
+        "use the Week 2 kv-cache checkpoint for the readable pre-kernel path"
+    )
+if args.disable_paged_attention and args.loader != "week3":
+    parser.error("--disable-paged-attention requires --loader week3")
+if args.disable_paged_attention and args.solution == "mlx":
+    parser.error("--disable-paged-attention is not supported with --solution mlx")
 
 use_mlx = False
 if args.solution == "tiny_llm":
     print("Using your tiny_llm solution")
     from tiny_llm import (
-        Qwen2ModelWeek1,
-        Qwen2ModelWeek2,
+        models,
         simple_generate,
         simple_generate_with_kv_cache,
+        speculative_generate,
         sampler,
     )
 
 elif args.solution == "tiny_llm_ref" or args.solution == "ref":
     print("Using tiny_llm_ref solution")
     from tiny_llm_ref import (
-        Qwen2ModelWeek1,
-        Qwen2ModelWeek2,
+        models,
         simple_generate,
         simple_generate_with_kv_cache,
+        speculative_generate,
         sampler,
     )
 
@@ -49,18 +93,66 @@ elif args.solution == "mlx":
 else:
     raise ValueError(f"Solution {args.solution} not supported")
 
+args.model = shortcut_name_to_full_name(args.model)
 mlx_model, tokenizer = load(args.model)
+
+if args.draft_model:
+    args.draft_model = shortcut_name_to_full_name(args.draft_model)
+    draft_mlx_model, draft_tokenizer = load(args.draft_model)
+    if args.loader == "week1":
+        raise ValueError("Draft model not supported for week1")
+else:
+    draft_mlx_model = None
+    draft_tokenizer = None
 
 with mx.stream(mx.gpu if args.device == "gpu" else mx.cpu):
     if use_mlx:
         tiny_llm_model = mlx_model
     else:
         if args.loader == "week1":
-            print("Using Qwen2ModelWeek1 loader")
-            tiny_llm_model = Qwen2ModelWeek1(mlx_model)
+            print(f"Using week1 loader for {args.model}")
+            tiny_llm_model = models.dispatch_model(args.model, mlx_model, week=1)
         elif args.loader == "week2":
-            print("Using Qwen2ModelWeek2 loader")
-            tiny_llm_model = Qwen2ModelWeek2(mlx_model)
+            print(
+                f"Using week2 loader with thinking={args.enable_thinking} for {args.model}"
+            )
+            dispatch_kwargs = {}
+            if args.week2_checkpoint is not None:
+                dispatch_kwargs["checkpoint"] = args.week2_checkpoint
+            tiny_llm_model = models.dispatch_model(
+                args.model, mlx_model, week=2, **dispatch_kwargs
+            )
+            if draft_mlx_model is not None:
+                print(f"Using draft model {args.draft_model}")
+                draft_tiny_llm_model = models.dispatch_model(
+                    args.draft_model,
+                    draft_mlx_model,
+                    week=2,
+                    **dispatch_kwargs,
+                )
+            else:
+                draft_tiny_llm_model = None
+        elif args.loader == "week3":
+            print(
+                f"Using week3 loader with paged_attention={not args.disable_paged_attention} "
+                f"thinking={args.enable_thinking} for {args.model}"
+            )
+            tiny_llm_model = models.dispatch_model(
+                args.model,
+                mlx_model,
+                week=3,
+                enable_paged_attention=not args.disable_paged_attention,
+            )
+            if draft_mlx_model is not None:
+                print(f"Using draft model {args.draft_model}")
+                draft_tiny_llm_model = models.dispatch_model(
+                    args.draft_model,
+                    draft_mlx_model,
+                    week=3,
+                    enable_paged_attention=not args.disable_paged_attention,
+                )
+            else:
+                draft_tiny_llm_model = None
         else:
             raise ValueError(f"Loader {args.loader} not supported")
     messages = [
@@ -68,7 +160,10 @@ with mx.stream(mx.gpu if args.device == "gpu" else mx.cpu):
         {"role": "user", "content": args.prompt},
     ]
     prompt = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=args.enable_thinking,
     )
     if not use_mlx:
         sampler = sampler.make_sampler(
@@ -76,8 +171,17 @@ with mx.stream(mx.gpu if args.device == "gpu" else mx.cpu):
         )
         if args.loader == "week1":
             simple_generate(tiny_llm_model, tokenizer, prompt, sampler=sampler)
-        elif args.loader == "week2":
-            simple_generate_with_kv_cache(tiny_llm_model, tokenizer, prompt)
+        elif args.loader in ("week2", "week3"):
+            if draft_tiny_llm_model is not None:
+                speculative_generate(
+                    draft_tiny_llm_model,
+                    tiny_llm_model,
+                    draft_tokenizer,
+                    tokenizer,
+                    prompt,
+                )
+            else:
+                simple_generate_with_kv_cache(tiny_llm_model, tokenizer, prompt)
     else:
         sampler = mlx_lm.sample_utils.make_sampler(
             args.sampler_temp, top_p=args.sampler_top_p, top_k=args.sampler_top_k

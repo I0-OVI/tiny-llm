@@ -1,58 +1,61 @@
 # Week 1: From Matmul to Text
 
-In this week, we will start from the basic matrix operations and see how those these matrix manipulations can turn the
-Qwen2 model parameters into a model that generates text. We will implement the neural network layers used in the Qwen2
-model using mlx's matrix APIs.
+This week, we will start with basic array and matrix operations and use them to turn Qwen3 model parameters into a model
+that generates text. We will implement the neural network layers used by Qwen3 with MLX's array APIs.
 
-We will use the Qwen2-7B-Instruct model for this week. As we need to dequantize the model parameters, the model of 4GB
-download size needs 20GB of memory in week 1. If you do not have enough memory, you can consider using the smaller 0.5B model.
+We will use `Qwen/Qwen3-0.6B-MLX-4bit`. The course model uses BF16 weights and
+activations by default, so start with the 0.6B model before trying larger Qwen3
+models. The required model path runs on the GPU. Small operator fixtures may
+use a different dtype as a readable correctness reference; they do not define
+the model-storage dtype.
 
-The MLX version of the Qwen2-7B-Instruct model we downloaded in the setup is an int4 quantized version of the original bfloat16 model.
+Numerically sensitive operations may promote arithmetic to FP32 and cast the
+result back to BF16. Week 1 favors readable array expressions, even when that
+means materializing an FP32 intermediate. Week 2 replaces those full-tensor
+promotions with kernels that keep model-sized storage in BF16 and accumulate in
+FP32 registers.
 
-## What We will Cover
+## What We Will Cover
 
-* Attention, Multi-Head Attention, and Grouped/Multi Query Attention
-* Positional Embeddings and RoPE
-* Put the attention layers together and implement the whole Transformer block
-* Implement the MLP layer and the whole Transformer model
-* Load the Qwen2 model parameters and generate text
+- Attention, multi-head attention, grouped-query attention, and multi-query attention
+- Positional encodings and RoPE
+- Using `mx.fast.rms_norm` for Qwen3's per-head Q/K normalization, then implementing RMSNorm ourselves
+- Implementing the MLP, combining the attention components, and building the complete Transformer model
+- Loading Qwen3 model parameters and generating text
 
-## What We will Not Cover
+## What We Will Not Cover
 
 To make the journey as interesting as possible, we will skip a few things for now:
 
-* How to quantize/dequantize a model -- that will be part of week 2. The Qwen2 model is quantized so we will need to
-  dequantize them before we can use them in our layer implementations.
-* Actually we still used some APIs other than matrix manipulations -- like softmax, exp, log, etc. But they are simple
-  and not implementing them would not affect the learning experience.
-* Tokenizer -- we will not implement the tokenizer from scratch. We will use the `mlx_lm` tokenizer to tokenize the input.
-* Loading the model weights -- I don't think it's an interesting thing to learn how to decode those tensor dump files, so
-  we will use the `mlx_lm` to load the model and steal the weights from the loaded model into our layer implementations.
+- Quantization and dequantization internals. These will be covered in Week 2. For now, we use a provided helper to
+  dequantize the Qwen3 weights before passing them to our layer implementations.
+- Low-level implementations of operations such as softmax, exponentiation, and logarithms. These operations are simple
+  enough that using the MLX versions does not detract from the learning objectives.
+- Tokenization. We use the `mlx_lm` tokenizer rather than implementing one from scratch.
+- Decoding model-weight files. We use `mlx_lm` to load the model, then transfer its weights into our layer implementations.
 
 ## Basic Matrix APIs
 
-Although MLX does not offer an introductory guide for beginners, its Python API is designed to be highly compatible with NumPy. To get started, you can refer to [NumPy: The Absolute Basic for Beginners](https://numpy.org/doc/stable/user/absolute_beginners.html) to learn essential matrix operations.
+MLX's Python API is designed to be familiar to NumPy users. If you are new to array programming, start with
+[NumPy: the absolute basics for beginners](https://numpy.org/doc/stable/user/absolute_beginners.html).
 
 You can also refer to the [MLX Operations API](https://ml-explore.github.io/mlx/build/html/python/ops.html#operations)
 for more details.
 
-## Qwen2 Models
+## Qwen3 Models
 
-You can try the Qwen2 model with MLX/vLLM. You can read the blog post below to have some idea of what we will build
-within this course. At the end of this week, we will be able to chat with the model -- that is to say, use Qwen2 to
-generate text, as a causal language model.
+You can run Qwen3 with MLX or vLLM. The readings below provide context for what we will build. By the end of the week,
+you will be able to use Qwen3 as a causal language model to generate text.
 
-The reference implementation of the Qwen2 model can be found in huggingface transformers, vLLM, and mlx-lm. You may
-utilize these resources to better understand the internals of the model and what we will implement in this week.
+Reference implementations of Qwen3 are available in Hugging Face Transformers, vLLM, and mlx-lm. Use them to explore
+the model's internals and compare them with this week's implementation.
 
 **📚 Readings**
 
-- [Qwen2.5: A Party of Foundation Models!](https://qwenlm.github.io/blog/qwen2.5/)
-- [Key Concepts of the Qwen2 Model](https://qwen.readthedocs.io/en/latest/getting_started/concepts.html)
-- [Huggingface Transformers - Qwen2](https://github.com/huggingface/transformers/tree/main/src/transformers/models/qwen2)
-- [vLLM Qwen2](https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/models/qwen2.py)
-- [mlx-lm Qwen2](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/qwen2.py)
-- [Qwen2 Technical Report](https://arxiv.org/pdf/2407.10671)
-- [Qwen2.5 Technical Report](https://arxiv.org/pdf/2412.15115)
+- [Qwen3: Think Deeper, Act Faster](https://qwenlm.github.io/blog/qwen3/)
+- [Hugging Face Transformers — Qwen3](https://github.com/huggingface/transformers/tree/main/src/transformers/models/qwen3)
+- [vLLM Qwen3](https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/models/qwen3.py)
+- [mlx-lm Qwen3](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/qwen3.py)
+- [Qwen3 Technical Report](https://arxiv.org/abs/2505.09388)
 
 {{#include copyright.md}}

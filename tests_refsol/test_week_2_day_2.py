@@ -1,51 +1,76 @@
-import pytest
+"""Week 2 Day 2 benchmark-lifecycle tests."""
+
 import mlx.core as mx
-from .tiny_llm_base import *
-from .utils import *
+import pytest
+
+from benches import bench
 
 
-def quantized_matmul_helper(
-    stream: mx.Stream, identity_matrix: bool, precision: mx.Dtype
-):
-    with mx.stream(stream):
-        if identity_matrix:
-            input = mx.eye(64, dtype=precision)
-        else:
-            input = mx.random.normal(shape=(3, 64), dtype=precision)
-        weight = mx.random.normal(shape=(5, 64), dtype=precision)
-        w_q, scales, biases = mx.quantize(weight)
-        user_out = quantized_matmul(
-            scales=scales,
-            biases=biases,
-            group_size=64,
-            bits=4,
-            a=input,
-            b=w_q,
-            transpose_b=True,
+class TrackingCache:
+    def __init__(self):
+        self.released = False
+
+    def release(self):
+        self.released = True
+
+
+class FakeModel:
+    def __init__(self):
+        self.caches = [TrackingCache(), TrackingCache()]
+
+    def create_kv_cache(self):
+        return self.caches
+
+
+def test_single_request_benchmark_releases_cache(monkeypatch):
+    model = FakeModel()
+    monkeypatch.setattr(
+        bench,
+        "sample_next_week2",
+        lambda model, tokens, offset, cache, logits_to_keep=1: mx.array(
+            [7], dtype=mx.uint32
+        ),
+    )
+
+    generated, _, _ = bench.run_one_request_week2(
+        model,
+        bench.BenchRequest(prompt_token_ids=[1, 2, 3], max_new_tokens=3),
+    )
+
+    assert generated == 3
+    assert all(cache.released for cache in model.caches)
+
+
+def test_single_request_benchmark_releases_cache_after_failure(monkeypatch):
+    model = FakeModel()
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("model failure")
+
+    monkeypatch.setattr(bench, "sample_next_week2", fail)
+    with pytest.raises(RuntimeError, match="model failure"):
+        bench.run_one_request_week2(
+            model,
+            bench.BenchRequest(prompt_token_ids=[1], max_new_tokens=1),
         )
-        ref_out = mx.quantized_matmul(
-            input,
-            w_q,
-            scales,
-            biases,
-            group_size=64,
-            bits=4,
-            transpose=True,
-        )
-        assert_allclose(user_out, ref_out, precision)
+
+    assert all(cache.released for cache in model.caches)
 
 
-def test_task_1_quantized_matmul_simple_f16_cpu():
-    quantized_matmul_helper(mx.cpu, True, mx.float16)
+def test_single_request_benchmark_selects_serving_prefill_logits(monkeypatch):
+    model = FakeModel()
+    observed = []
 
+    def sample(model, tokens, offset, cache, logits_to_keep=1):
+        observed.append(logits_to_keep)
+        return mx.array([7], dtype=mx.uint32)
 
-def test_task_1_quantized_matmul_complex_f16_cpu():
-    quantized_matmul_helper(mx.cpu, False, mx.float16)
+    monkeypatch.setattr(bench, "sample_next_week2", sample)
 
+    bench.run_one_request_week2(
+        model,
+        bench.BenchRequest(prompt_token_ids=[1, 2, 3], max_new_tokens=1),
+        prefill_logits_to_keep=1,
+    )
 
-def test_task_2_quantized_matmul_simple_f16_gpu():
-    quantized_matmul_helper(mx.gpu, True, mx.float16)
-
-
-def test_task_2_quantized_matmul_complex_f16_gpu():
-    quantized_matmul_helper(mx.gpu, False, mx.float16)
+    assert observed == [1]

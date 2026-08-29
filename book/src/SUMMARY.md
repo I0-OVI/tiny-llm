@@ -1,6 +1,6 @@
-# LLM Serving in a Week
+# Tiny-LLM
 
-[Preface](./preface.md)
+[Learn LLM Serving](./preface.md)
 [Setting Up the Environment](./setup.md)
 
 ---
@@ -8,24 +8,40 @@
 - [Week 1: From Matmul to Text](./week1-overview.md)
     - [Attention and Multi-Head Attention](./week1-01-attention.md)
     - [Positional Encodings and RoPE](./week1-02-positional-encodings.md)
-    - [Grouped/Multi Query Attention](./week1-03-gqa.md)
+    - [Grouped-Query and Multi-Query Attention](./week1-03-gqa.md)
     - [RMSNorm and MLP](./week1-04-rmsnorm-and-mlp.md)
-    - [The Qwen2 Model](./week1-05-qwen2-model.md)
+    - [The Qwen3 Model](./week1-05-qwen3-model.md)
     - [Generating the Response](./week1-06-generate-response.md)
     - [Sampling and Preparing for Week 2](./week1-07-sampling-prepare.md)
-    <!--
-    - [Attention and Multi-Head Attention](./week1-01-attention.md)
-    - [Positional Embeddings and RoPE](./week1-02-positional-embeddings.md)
-    - [Grouped/Multi Query Attention](./week1-03-gqa.md)
-    - [Multilayer Perceptron Layer and Transformer](./week1-04-mlp-transformer.md)
-    - [Wiring the Qwen2 Model](./week1-05-model-1.md)
-    - [Loading the Model](./week1-06-model-2.md)
-    - [Generating the Response](./week1-07-generate.md)
-    -->
-
-- [Week 2: Optimizing]()
-
-- [Week 3: Serving]()
+- [🚧 Week 2: A Step Closer to vLLM](./week2-overview.md)
+    - [🚧 KV Cache](./week2-01-kv-cache.md)
+    - [🚧 Benchmarking and Profiling](./week2-02-benchmark-profile.md)
+        - [🚧 Optional: Metal Profiling](./week2-advanced-profiling.md)
+    - [🚧 Quantize the Model](./week2-03-quantize-model.md)
+    - [🚧 Fused Model Kernels](./week2-04-fused-model-kernels.md)
+    - [🚧 Fused Decode Attention](./week2-05-decode-attention.md)
+    - [🚧 SIMD-Matrix Prefill](./week2-06-simd-matrix-prefill.md)
+    - [🚧 Split-K Prefill](./week2-07-split-k-prefill.md)
+- [🚧 Week 3: Build a Mini vLLM](./week3-overview.md)
+    - [🚧 Continuous Batching](./week3-01-continuous-batching.md)
+    - [🚧 Chunked Prefill](./week3-02-chunked-prefill.md)
+    - [🚧 Paged KV Cache](./week3-03-paged-attention-part1.md)
+    - [🚧 Direct Paged Attention](./week3-04-paged-attention-part2.md)
+    - [🚧 Paged FlashAttention](./week3-05-flash-attention.md)
+    - [🚧 Optional: Speculative Decoding](./week3-optional-speculative-decoding.md)
+    - [🚧 Optional: Mixture of Experts](./week3-optional-moe.md)
+- [🚧 Week 4: Build a Coding Agent](./week4-overview.md)
+    - [🚧 Day 1: Validated Agent Loop](./week4-01-agent-loop.md)
+    - [🚧 Day 2: Inspect a Workspace](./week4-02-tools.md)
+    - [🚧 Day 3: Edit, Validate, and Record](./week4-03-safe-editing.md)
+    - [🚧 Day 4: Checkpoint and Resume](./week4-04-sessions.md)
+    - [🚧 Day 5: Compact Completed Work](./week4-05-compaction.md)
+    - [🚧 Day 6: Inspect and Steer a Paused Agent](./week4-06-steering.md)
+    - [🚧 Day 7: Evaluate Observable Outcomes](./week4-07-evaluation.md)
+    - [🚧 Day 8: Fork, Steer, and Select](./week4-08-fork-steer-select.md)
+    - [🚧 Day 9: Bound Tool Evidence](./week4-09-bound-tool-evidence.md)
+- [🚧 Appendix: Performance Evidence Ledger](./appendix-performance.md)
+- [Sponsored by Raft.build](./sponsor.md)
 
 ---
 

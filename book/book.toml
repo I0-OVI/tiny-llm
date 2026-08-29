@@ -1,15 +1,16 @@
 [book]
 authors = ["Alex Chi", "Connor Zhang"]
 language = "en"
-multilingual = false
 src = "src"
-title = "Tiny LLM - LLM Serving in a Week"
+title = "Tiny-LLM — Build an LLM Serving System with MLX"
+description = "A hands-on course for systems engineers. Build and optimize an LLM serving system with MLX, then connect its inference state and context budget to a coding agent."
 
 [preprocessor.toc]
 command = "mdbook-toc"
 renderer = ["html"]
 
 [output.html]
+additional-css = ["custom.css"]
 git-repository-url = "https://github.com/skyzh/tiny-llm"
 
 [preprocessor.katex]

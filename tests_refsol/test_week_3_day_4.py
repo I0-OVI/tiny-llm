@@ -1,0 +1,372 @@
+"""Week 3 Day 4 paged-attention runtime tests."""
+
+import inspect
+from types import SimpleNamespace
+
+import mlx.core as mx
+import pytest
+from .tiny_llm_base import (
+    BatchingKvCache,
+    QuantizedEmbedding,
+    QuantizedWeights,
+    Qwen3ModelWeek2,
+    Qwen3ModelWeek3,
+    TinyKvPagedCache,
+    TinyKvPagedPool,
+    paged_attention,
+    scaled_dot_product_attention_grouped,
+)
+from .utils import assert_allclose
+
+
+def test_paged_attention_is_course_owned():
+    source = inspect.getsource(paged_attention)
+
+    assert "mx.fast" not in source
+    assert "scaled_dot_product_attention" not in source
+    assert "gather_dense" not in source
+    assert ".paged_attention(" in source
+
+
+def _random_chunk(
+    length: int, num_heads: int = 2, head_dim: int = 4
+) -> tuple[mx.array, mx.array]:
+    key = mx.random.normal(shape=(1, num_heads, length, head_dim)).astype(mx.float32)
+    value = mx.random.normal(shape=(1, num_heads, length, head_dim)).astype(mx.float32)
+    return key, value
+
+
+def _quantized_layer(
+    out_dim: int, in_dim: int, group_size: int = 128
+) -> SimpleNamespace:
+    weight = mx.random.normal(shape=(out_dim, in_dim), dtype=mx.bfloat16)
+    quantized_weight, scales, biases = mx.quantize(
+        weight, group_size=group_size, bits=4
+    )
+    return SimpleNamespace(
+        weight=quantized_weight,
+        scales=scales,
+        biases=biases,
+        group_size=group_size,
+        bits=4,
+    )
+
+
+def _fake_qwen3_mlx_model(head_dim: int = 32) -> SimpleNamespace:
+    mx.random.seed(0)
+    args = SimpleNamespace(
+        num_hidden_layers=2,
+        hidden_size=128,
+        vocab_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=head_dim,
+        intermediate_size=256,
+        rms_norm_eps=1e-5,
+        max_position_embeddings=128,
+        rope_theta=10000,
+        tie_word_embeddings=True,
+    )
+    embed_tokens = _quantized_layer(args.vocab_size, args.hidden_size)
+    kv_hidden_size = args.num_key_value_heads * args.head_dim
+    attn_hidden_size = args.num_attention_heads * args.head_dim
+    layers = []
+    for _ in range(args.num_hidden_layers):
+        layers.append(
+            SimpleNamespace(
+                self_attn=SimpleNamespace(
+                    q_proj=_quantized_layer(attn_hidden_size, args.hidden_size),
+                    k_proj=_quantized_layer(kv_hidden_size, args.hidden_size),
+                    v_proj=_quantized_layer(kv_hidden_size, args.hidden_size),
+                    o_proj=_quantized_layer(args.hidden_size, attn_hidden_size),
+                    q_norm=SimpleNamespace(
+                        weight=mx.ones((args.head_dim,), dtype=mx.bfloat16)
+                    ),
+                    k_norm=SimpleNamespace(
+                        weight=mx.ones((args.head_dim,), dtype=mx.bfloat16)
+                    ),
+                ),
+                mlp=SimpleNamespace(
+                    gate_proj=_quantized_layer(
+                        args.intermediate_size, args.hidden_size
+                    ),
+                    up_proj=_quantized_layer(args.intermediate_size, args.hidden_size),
+                    down_proj=_quantized_layer(
+                        args.hidden_size, args.intermediate_size
+                    ),
+                ),
+                input_layernorm=SimpleNamespace(
+                    weight=mx.ones((args.hidden_size,), dtype=mx.bfloat16)
+                ),
+                post_attention_layernorm=SimpleNamespace(
+                    weight=mx.ones((args.hidden_size,), dtype=mx.bfloat16)
+                ),
+            )
+        )
+    return SimpleNamespace(
+        args=args,
+        model=SimpleNamespace(
+            embed_tokens=embed_tokens,
+            layers=layers,
+            norm=SimpleNamespace(
+                weight=mx.ones((args.hidden_size,), dtype=mx.bfloat16)
+            ),
+        ),
+    )
+
+
+def test_task_1_paged_attention_matches_dense_attention():
+    page_size = 4
+    pool = TinyKvPagedPool(page_size=page_size)
+    cache = TinyKvPagedCache(pool=pool)
+    first_key, first_value = _random_chunk(3)
+    second_key, second_value = _random_chunk(3)
+
+    cache.update_and_fetch(first_key, first_value)
+    metadata = cache.update_and_fetch_paged(second_key, second_value, mask="causal")
+
+    query = mx.random.normal(shape=(1, 4, second_key.shape[2], 4)).astype(mx.float32)
+    dense_key, dense_value = cache.gather_dense()
+    dense_output = scaled_dot_product_attention_grouped(
+        query,
+        dense_key,
+        dense_value,
+        mask="causal",
+    )
+    paged_output = paged_attention(
+        query,
+        metadata.key_pages,
+        metadata.value_pages,
+        metadata.block_table,
+        metadata.context_lens,
+        metadata.page_size,
+        mask=metadata.mask,
+    )
+
+    assert metadata.block_table.tolist() == [[0, 1]]
+    assert metadata.context_lens.tolist() == [6]
+    assert metadata.key_pages.shape == (2, 2, page_size, 4)
+    assert metadata.value_pages.shape == (2, 2, page_size, 4)
+    assert_allclose(paged_output, dense_output, precision=mx.float32)
+
+
+def test_task_2_batched_paged_attention_matches_dense_attention():
+    page_size = 4
+    pool = TinyKvPagedPool(page_size=page_size)
+    first = TinyKvPagedCache(pool=pool)
+    second = TinyKvPagedCache(pool=pool)
+    first.update_and_fetch(*_random_chunk(3))
+    second.update_and_fetch(*_random_chunk(6))
+
+    batch = BatchingKvCache(max_active_requests=3, max_seq_len=16)
+    batch.add_request(first, 0)
+    batch.add_request(second, 2)
+
+    keys = mx.zeros((3, 2, 1, 4), dtype=mx.float32)
+    values = mx.zeros((3, 2, 1, 4), dtype=mx.float32)
+    keys[0:1], values[0:1] = _random_chunk(1)
+    keys[2:3], values[2:3] = _random_chunk(1)
+
+    metadata = batch.update_and_fetch_paged(
+        keys,
+        values,
+        mask_length=1,
+        mask="causal",
+    )
+    query = mx.random.normal(shape=(3, 4, 1, 4)).astype(mx.float32)
+    paged_output = paged_attention(
+        query,
+        metadata.key_pages,
+        metadata.value_pages,
+        metadata.block_table,
+        metadata.context_lens,
+        metadata.page_size,
+        mask=metadata.mask,
+    )
+
+    first_key, first_value = first.gather_dense()
+    first_output = scaled_dot_product_attention_grouped(
+        query[0:1], first_key, first_value, mask="causal"
+    )
+    second_key, second_value = second.gather_dense()
+    second_output = scaled_dot_product_attention_grouped(
+        query[2:3], second_key, second_value, mask="causal"
+    )
+
+    assert metadata.context_lens.tolist() == [4, 0, 7]
+    assert metadata.block_table.shape == (3, 2)
+    assert metadata.block_table.tolist()[1] == [-1, -1]
+    assert metadata.key_pages.shape == (3, 2, page_size, 4)
+    assert_allclose(paged_output[0:1], first_output, precision=mx.float32)
+    assert_allclose(paged_output[2:3], second_output, precision=mx.float32)
+
+
+def test_paged_attention_preserves_bfloat16_for_decode():
+    query_length = 1
+    page_size = 32
+    pool = TinyKvPagedPool(page_size=page_size)
+    cache = TinyKvPagedCache(pool=pool)
+    blocker = TinyKvPagedCache(pool=pool)
+    first_key, first_value = _random_chunk(64, head_dim=128)
+    first_key = first_key.astype(mx.bfloat16)
+    first_value = first_value.astype(mx.bfloat16)
+    cache.update_and_fetch(first_key, first_value)
+
+    blocker_key, blocker_value = _random_chunk(page_size, head_dim=128)
+    blocker.update_and_fetch(
+        blocker_key.astype(mx.bfloat16),
+        blocker_value.astype(mx.bfloat16),
+    )
+    next_key, next_value = _random_chunk(query_length, head_dim=128)
+    metadata = cache.update_and_fetch_paged(
+        next_key.astype(mx.bfloat16),
+        next_value.astype(mx.bfloat16),
+        mask="causal",
+    )
+    query = mx.random.normal(shape=(1, 8, query_length, 128)).astype(mx.bfloat16)
+
+    dense_key, dense_value = cache.gather_dense()
+    expected = scaled_dot_product_attention_grouped(
+        query, dense_key, dense_value, mask="causal"
+    )
+    output = paged_attention(
+        query,
+        metadata.key_pages,
+        metadata.value_pages,
+        metadata.block_table,
+        metadata.context_lens,
+        metadata.page_size,
+        mask=metadata.mask,
+    )
+
+    assert cache.page_ids[:2] == [0, 1]
+    assert cache.page_ids[2] == 3
+    assert output.dtype == mx.bfloat16
+    assert_allclose(output, expected, precision=mx.bfloat16, rtol=0.02, atol=0.02)
+
+
+@pytest.mark.parametrize(
+    "query_length", [1, 9, 65], ids=["direct", "flash-9", "flash-65"]
+)
+@pytest.mark.parametrize(
+    ("context_lens", "block_table", "page_size", "message"),
+    [
+        ([-1], [[0, 1, 2]], 32, "nonnegative"),
+        ([97], [[0, 1, 2]], 32, "not covered"),
+        ([65], [[0, 1]], 32, "not covered"),
+        ([65], [[0, -1, 2]], 32, "outside physical page storage"),
+        ([65], [[0, 3, 2]], 32, "outside physical page storage"),
+        ([65], [[0, 0, 2]], 32, "aliased"),
+        ([1], [[0, -2, -1]], 32, "must use the -1 sentinel"),
+        ([1], [[0, 1, -1]], 32, "must use the -1 sentinel"),
+        ([65], [[0, 1, 2]], 0, "positive integer"),
+    ],
+    ids=[
+        "negative-context",
+        "oversized-context",
+        "insufficient-table-width",
+        "negative-live-page",
+        "page-id-equals-domain",
+        "aliased-live-page",
+        "invalid-padding-sentinel",
+        "live-page-in-padding",
+        "zero-page-size",
+    ],
+)
+def test_paged_attention_rejects_invalid_live_metadata_before_dispatch(
+    query_length, context_lens, block_table, page_size, message
+):
+    head_dim = 4 if query_length == 1 else 128
+    dtype = mx.float32 if query_length == 1 else mx.bfloat16
+    query = mx.zeros((1, 4, query_length, head_dim), dtype=dtype)
+    key_pages = mx.zeros((3, 2, 32, head_dim), dtype=dtype)
+    value_pages = mx.zeros((3, 2, 32, head_dim), dtype=dtype)
+
+    with pytest.raises(ValueError, match=message):
+        paged_attention(
+            query,
+            key_pages,
+            value_pages,
+            mx.array(block_table, dtype=mx.int32),
+            mx.array(context_lens, dtype=mx.int32),
+            page_size,
+            mask="causal",
+        )
+
+
+@pytest.mark.parametrize(
+    ("query_length", "context_len"),
+    [(2, 1), (9, 8), (65, 64)],
+    ids=["direct", "flash-9", "flash-65"],
+)
+def test_paged_attention_rejects_active_context_shorter_than_query(
+    query_length, context_len
+):
+    head_dim = 4 if query_length == 2 else 128
+    dtype = mx.float32 if query_length == 2 else mx.bfloat16
+    query = mx.zeros((1, 4, query_length, head_dim), dtype=dtype)
+    key_pages = mx.zeros((3, 2, 32, head_dim), dtype=dtype)
+    value_pages = mx.zeros((3, 2, 32, head_dim), dtype=dtype)
+    live_pages = (context_len + 31) // 32
+    block_table = [[*range(live_pages), *([-1] * (3 - live_pages))]]
+
+    with pytest.raises(ValueError, match="must be zero or at least query length"):
+        paged_attention(
+            query,
+            key_pages,
+            value_pages,
+            mx.array(block_table, dtype=mx.int32),
+            mx.array([context_len], dtype=mx.int32),
+            32,
+            mask="causal",
+        )
+
+
+def test_task_3_incremental_decode_matches_week2_with_paged_attention():
+    mlx_model = _fake_qwen3_mlx_model()
+    week2_model = Qwen3ModelWeek2(mlx_model)
+    week3_model = Qwen3ModelWeek3(
+        mlx_model,
+        page_size=4,
+        use_mlx_quantized_linear=False,
+    )
+    inputs = mx.array([[1, 5, 7, 3, 9, 11]], dtype=mx.int32)
+    week2_cache = week2_model.create_kv_cache()
+    week3_cache = week3_model.create_kv_cache()
+
+    for offset in range(inputs.shape[1]):
+        token = inputs[:, offset : offset + 1]
+        week2_out = week2_model(token, offset, week2_cache)
+        week3_out = week3_model(token, offset, week3_cache)
+        week2_out = week2_out - mx.logsumexp(week2_out, keepdims=True)
+        week3_out = week3_out - mx.logsumexp(week3_out, keepdims=True)
+        assert_allclose(
+            week3_out,
+            week2_out,
+            precision=mx.bfloat16,
+            rtol=1e-3,
+            atol=1e-3,
+        )
+
+
+def test_week3_custom_embedding_matches_readable_path():
+    weight = mx.random.normal((17, 256)).astype(mx.bfloat16)
+    packed, scales, biases = mx.quantize(weight, group_size=128, bits=4)
+    quantized = QuantizedWeights(scales, biases, 128, 4, packed)
+    readable = QuantizedEmbedding(17, 256, quantized)
+    custom = QuantizedEmbedding(17, 256, quantized, use_custom_kernel=True)
+    indices = mx.array([[1, 4, 9]], dtype=mx.int32)
+    assert_allclose(
+        custom(indices),
+        readable(indices),
+        precision=mx.bfloat16,
+        atol=2e-2,
+        rtol=2e-2,
+    )
+
+
+def test_week3_default_keeps_course_owned_embedding_and_prefill_flags():
+    model = Qwen3ModelWeek3(_fake_qwen3_mlx_model())
+    assert model.embedding.use_custom_kernel
+    assert model.embedding.weight.use_simdgroup_matmul
+    assert all(layer.self_attn.wq.use_simdgroup_matmul for layer in model.layers_inner)

@@ -6,6 +6,15 @@ from .positional_encoding import *
 from .quantize import *
 from .generate import *
 from .kv_cache import *
-from .qwen2_week1 import Qwen2ModelWeek1
-from .qwen2_week2 import Qwen2ModelWeek2
+from .paged_kv_cache import *
+from .qwen3_week1 import Qwen3ModelWeek1
+from .qwen3_week2 import Qwen3ModelWeek2
+from .qwen3_week3 import Qwen3ModelWeek3
 from .sampler import *
+from .kv_cache import *
+from .paged_kv_cache import *
+from .batch import *
+from .models import *
+from .moe import *
+from .week2_kernels import *
+from .agent import *
