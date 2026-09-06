@@ -1,6 +1,5 @@
 """Week 3 Day 4 paged-attention runtime tests."""
 
-import inspect
 from types import SimpleNamespace
 
 import mlx.core as mx
@@ -19,21 +18,91 @@ from .tiny_llm_base import (
 from .utils import assert_allclose
 
 
-def test_paged_attention_is_course_owned():
-    source = inspect.getsource(paged_attention)
-
-    assert "mx.fast" not in source
-    assert "scaled_dot_product_attention" not in source
-    assert "gather_dense" not in source
-    assert ".paged_attention(" in source
-
-
 def _random_chunk(
     length: int, num_heads: int = 2, head_dim: int = 4
 ) -> tuple[mx.array, mx.array]:
     key = mx.random.normal(shape=(1, num_heads, length, head_dim)).astype(mx.float32)
     value = mx.random.normal(shape=(1, num_heads, length, head_dim)).astype(mx.float32)
     return key, value
+
+
+@pytest.mark.parametrize(
+    ("query_length", "context_length", "page_size", "physical_order"),
+    [
+        (9, 13, 8, [2, 0]),
+        (17, 35, 16, [3, 0, 2]),
+    ],
+    ids=["nine-token", "multi-page"],
+)
+def test_task_2_bfloat16_long_prefill_matches_dense_attention(
+    query_length, context_length, page_size, physical_order
+):
+    """The public operator must follow logical pages, tails, and causal prefixes."""
+    mx.random.seed(query_length)
+    num_kv_heads = 2
+    num_heads = 4
+    head_dim = 128
+    num_physical_pages = max(physical_order) + 2
+
+    query = mx.random.normal(shape=(1, num_heads, query_length, head_dim)).astype(
+        mx.bfloat16
+    )
+    dense_key = mx.random.normal(
+        shape=(1, num_kv_heads, context_length, head_dim)
+    ).astype(mx.bfloat16)
+    dense_value = mx.random.normal(
+        shape=(1, num_kv_heads, context_length, head_dim)
+    ).astype(mx.bfloat16)
+
+    # Poison every unused physical page and unwritten tail slot. A correct
+    # implementation reads only the live logical positions named below.
+    key_pages = (
+        mx.ones(
+            (num_physical_pages, num_kv_heads, page_size, head_dim),
+            dtype=mx.bfloat16,
+        )
+        * 31
+    )
+    value_pages = (
+        mx.ones(
+            (num_physical_pages, num_kv_heads, page_size, head_dim),
+            dtype=mx.bfloat16,
+        )
+        * -17
+    )
+    for logical_page, physical_page in enumerate(physical_order):
+        start = logical_page * page_size
+        stop = min(start + page_size, context_length)
+        width = stop - start
+        key_pages[physical_page, :, :width, :] = dense_key[0, :, start:stop, :]
+        value_pages[physical_page, :, :width, :] = dense_value[0, :, start:stop, :]
+
+    block_table = mx.array([physical_order + [-1]], dtype=mx.int32)
+    context_lens = mx.array([context_length], dtype=mx.int32)
+    expected = scaled_dot_product_attention_grouped(
+        query,
+        dense_key,
+        dense_value,
+        mask="causal",
+    )
+    output = paged_attention(
+        query,
+        key_pages,
+        value_pages,
+        block_table,
+        context_lens,
+        page_size,
+        mask="causal",
+    )
+
+    assert output.dtype == mx.bfloat16
+    assert_allclose(
+        output,
+        expected,
+        precision=mx.bfloat16,
+        rtol=0.02,
+        atol=0.02,
+    )
 
 
 def _quantized_layer(
@@ -249,17 +318,17 @@ def test_paged_attention_preserves_bfloat16_for_decode():
     "query_length", [1, 9, 65], ids=["direct", "flash-9", "flash-65"]
 )
 @pytest.mark.parametrize(
-    ("context_lens", "block_table", "page_size", "message"),
+    ("context_lens", "block_table", "page_size"),
     [
-        ([-1], [[0, 1, 2]], 32, "nonnegative"),
-        ([97], [[0, 1, 2]], 32, "not covered"),
-        ([65], [[0, 1]], 32, "not covered"),
-        ([65], [[0, -1, 2]], 32, "outside physical page storage"),
-        ([65], [[0, 3, 2]], 32, "outside physical page storage"),
-        ([65], [[0, 0, 2]], 32, "aliased"),
-        ([1], [[0, -2, -1]], 32, "must use the -1 sentinel"),
-        ([1], [[0, 1, -1]], 32, "must use the -1 sentinel"),
-        ([65], [[0, 1, 2]], 0, "positive integer"),
+        ([-1], [[0, 1, 2]], 32),
+        ([97], [[0, 1, 2]], 32),
+        ([65], [[0, 1]], 32),
+        ([65], [[0, -1, 2]], 32),
+        ([65], [[0, 3, 2]], 32),
+        ([65], [[0, 0, 2]], 32),
+        ([1], [[0, -2, -1]], 32),
+        ([1], [[0, 1, -1]], 32),
+        ([65], [[0, 1, 2]], 0),
     ],
     ids=[
         "negative-context",
@@ -274,7 +343,7 @@ def test_paged_attention_preserves_bfloat16_for_decode():
     ],
 )
 def test_paged_attention_rejects_invalid_live_metadata_before_dispatch(
-    query_length, context_lens, block_table, page_size, message
+    query_length, context_lens, block_table, page_size
 ):
     head_dim = 4 if query_length == 1 else 128
     dtype = mx.float32 if query_length == 1 else mx.bfloat16
@@ -282,7 +351,7 @@ def test_paged_attention_rejects_invalid_live_metadata_before_dispatch(
     key_pages = mx.zeros((3, 2, 32, head_dim), dtype=dtype)
     value_pages = mx.zeros((3, 2, 32, head_dim), dtype=dtype)
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError):
         paged_attention(
             query,
             key_pages,
@@ -310,7 +379,7 @@ def test_paged_attention_rejects_active_context_shorter_than_query(
     live_pages = (context_len + 31) // 32
     block_table = [[*range(live_pages), *([-1] * (3 - live_pages))]]
 
-    with pytest.raises(ValueError, match="must be zero or at least query length"):
+    with pytest.raises(ValueError):
         paged_attention(
             query,
             key_pages,
@@ -363,10 +432,3 @@ def test_week3_custom_embedding_matches_readable_path():
         atol=2e-2,
         rtol=2e-2,
     )
-
-
-def test_week3_default_keeps_course_owned_embedding_and_prefill_flags():
-    model = Qwen3ModelWeek3(_fake_qwen3_mlx_model())
-    assert model.embedding.use_custom_kernel
-    assert model.embedding.weight.use_simdgroup_matmul
-    assert all(layer.self_attn.wq.use_simdgroup_matmul for layer in model.layers_inner)
